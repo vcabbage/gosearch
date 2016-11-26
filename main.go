@@ -20,61 +20,35 @@ func main() {
 	os.Exit(run())
 }
 
-func parseArgs(flagset *flag.FlagSet) (string, []string, error) {
-	if len(os.Args) > 2 {
-		return "", nil, errors.New("Must provide search term")
-	}
-	query := os.Args[len(os.Args)-1]
-	args := os.Args[1 : len(os.Args)-1]
-
-	var localArgs, goArgs []string
-	lastLocal := false
-	for _, arg := range args {
-		norm := strings.TrimPrefix(arg, "-")
-		if i := strings.Index(norm, "="); i > -1 {
-			norm = norm[:i]
-		}
-		if flagset.Lookup(norm) != nil || (lastLocal && arg[0] != '-') {
-			localArgs = append(localArgs, arg)
-			lastLocal = true
-			continue
-		}
-		goArgs = append(goArgs, arg)
-		lastLocal = false
-	}
-
-	return query, goArgs, flagset.Parse(localArgs)
-}
-
 func run() int {
-	flagset := flag.NewFlagSet("gosearch", flag.ExitOnError)
-	flagset.Usage = func() {
+	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage of gosearch:
-gosearch [flags] [go get flags] [search term]
+gosearch [flags] [search term]
 `)
-		flagset.PrintDefaults()
+		flag.PrintDefaults()
 	}
 	var (
-		limit = flagset.Int("limit", 10, "maximum number of search results to display")
-		forks = flagset.Bool("forks", false, "include forks")
-		// libs          = flagset.Bool("libs", true, "include non-main packages")
-		apps          = flagset.Bool("apps", false, "search for main packages instead of libs")
-		minStars      = flagset.Int("minstars", 1, "minimum # of stars for package to be displayed")
-		minImports    = flagset.Int("minimports", 0, "minimum # of imports for package to be displayed")
-		showInstalled = flagset.Bool("installed", false, "mark packeges that are already installed with *")
-		inPath        = flagset.Bool("inpath", true, "search term must be in package path")
-		help          = flagset.Bool("h", false, "display help")
+		limit         = flag.Int("limit", 10, "maximum number of search results to display")
+		forks         = flag.Bool("forks", false, "include forks")
+		apps          = flag.Bool("apps", false, "search for main packages instead of libs")
+		minStars      = flag.Int("stars", 1, "minimum # of stars for package to be displayed")
+		minImports    = flag.Int("imports", 0, "minimum # of imports for package to be displayed")
+		showInstalled = flag.Bool("installed", false, "mark packeges that are already installed with *")
+		inPath        = flag.Bool("inpath", true, "search term must be in package path")
+		goflags       []string
 	)
-	query, goArgs, err := parseArgs(flagset)
-	if err != nil {
-		fmt.Println(err)
-		fmt.Println()
-		flagset.Usage()
+	flag.Var((*stringsFlag)(&goflags), "goflags", `arguments to be passed to "go get" (default "-u -v")`)
+	flag.Parse()
+
+	if flag.Arg(0) == "" {
+		fmt.Fprintf(os.Stderr, "Must provide search term.")
+		flag.PrintDefaults()
 		return 1
 	}
-	if *help {
-		flagset.Usage()
-		return 1
+	query := flag.Arg(0)
+
+	if goflags == nil {
+		goflags = []string{"-u", "-v"}
 	}
 
 	matches, err := queryGodoc(query)
@@ -169,7 +143,7 @@ gosearch [flags] [go get flags] [search term]
 	}
 
 	args := []string{"get"}
-	args = append(args, goArgs...)
+	args = append(args, goflags...)
 	args = append(args, importPath)
 
 	fmt.Println("Install command:", goBin, strings.Join(args, " "))
@@ -191,7 +165,7 @@ gosearch [flags] [go get flags] [search term]
 type pack struct {
 	Name        string  `json:"name,omitempty"`
 	Path        string  `json:"path"`
-	ImportCount int     `json:"import_count` // This is verbatim from the gddo repe.
+	ImportCount int     `bool:"import_count"`
 	Synopsis    string  `json:"synopsis,omitempty"`
 	Fork        bool    `json:"fork,omitempty"`
 	Stars       int     `json:"stars,omitempty"`
@@ -227,4 +201,61 @@ func queryGodoc(q string) ([]pack, error) {
 	}
 
 	return results.Results, nil
+}
+
+// stringsFlag copied from https://github.com/golang/go/blob/4e584c52036fb2a572fab466e2a291fb695da882/src/cmd/go/build.go
+// Copyright 2011 The Go Authors. All rights reserved.
+type stringsFlag []string
+
+func (v *stringsFlag) Set(s string) error {
+	var err error
+	*v, err = splitQuotedFields(s)
+	if *v == nil {
+		*v = []string{}
+	}
+	return err
+}
+
+func splitQuotedFields(s string) ([]string, error) {
+	// Split fields allowing '' or "" around elements.
+	// Quotes further inside the string do not count.
+	var f []string
+	for len(s) > 0 {
+		for len(s) > 0 && isSpaceByte(s[0]) {
+			s = s[1:]
+		}
+		if len(s) == 0 {
+			break
+		}
+		// Accepted quoted string. No unescaping inside.
+		if s[0] == '"' || s[0] == '\'' {
+			quote := s[0]
+			s = s[1:]
+			i := 0
+			for i < len(s) && s[i] != quote {
+				i++
+			}
+			if i >= len(s) {
+				return nil, fmt.Errorf("unterminated %c string", quote)
+			}
+			f = append(f, s[:i])
+			s = s[i+1:]
+			continue
+		}
+		i := 0
+		for i < len(s) && !isSpaceByte(s[i]) {
+			i++
+		}
+		f = append(f, s[:i])
+		s = s[i:]
+	}
+	return f, nil
+}
+
+func isSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+func (v *stringsFlag) String() string {
+	return "<stringsFlag>"
 }
